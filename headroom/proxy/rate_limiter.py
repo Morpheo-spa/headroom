@@ -7,11 +7,11 @@ Extracted from server.py for maintainability.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from collections import defaultdict
 
+from headroom._compat import AsyncLock
 from headroom.proxy.models import RateLimitState
 
 logger = logging.getLogger("headroom.proxy")
@@ -38,7 +38,7 @@ class TokenBucketRateLimiter:
         self._token_buckets: dict[str, RateLimitState] = defaultdict(
             lambda: RateLimitState(tokens=tokens_per_minute, last_update=time.time())
         )
-        self._lock = asyncio.Lock()
+        self._lock = AsyncLock()
 
     async def _cleanup_stale_buckets(self) -> None:
         """Remove buckets that haven't been used in the last 10 minutes."""

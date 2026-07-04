@@ -166,7 +166,7 @@ def _redact_value(value: Any, *, in_image_path: bool = False) -> Any:
             )
             for k, v in value.items()
         }
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_redact_value(item, in_image_path=in_image_path) for item in value]
     return value
 
