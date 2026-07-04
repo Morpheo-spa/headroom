@@ -62,6 +62,7 @@ SUBSCRIPTION_UA_PREFIXES: tuple[str, ...] = (
     "claude-code/",
     "codex-cli/",
     "cursor/",
+    "grok/",
     "claude-vscode/",
     "github-copilot/",
     "anthropic-cli/",
@@ -203,6 +204,7 @@ CLIENT_UA_MAP: tuple[tuple[str, str], ...] = (
     ("codex-cli/", "codex"),
     # Editors / IDEs
     ("cursor/", "cursor"),
+    ("grok/", "grok_build"),
     ("zed/", "zed"),
     # Other AI coding harnesses
     ("aider/", "aider"),
