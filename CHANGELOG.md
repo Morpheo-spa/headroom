@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contains the panic and treats the fragment as plain text, so the request is
   compressed and forwarded normally instead of returning HTTP 500
   ([#1547](https://github.com/headroomlabs-ai/headroom/issues/1547)).
+- **proxy:** `headroom proxy` on Windows no longer crashes with `KeyError: 'asyncio:SelectorEventLoop'` when running against uvicorn < 0.36. Older uvicorn builds only accept built-in loop names, so Headroom now sets `WindowsSelectorEventLoopPolicy` on those versions while keeping the selector-loop import path on uvicorn >= 0.36 ([#1650](https://github.com/headroomlabs-ai/headroom/issues/1650), [#1621](https://github.com/headroomlabs-ai/headroom/issues/1621)).
 - Proactive expansion blocks injected into user turns are now wrapped in
   `<headroom_proactive_expansion>` XML tags, giving downstream consumers
   (LLMs, loggers, attribution parsers) a machine-readable provenance
