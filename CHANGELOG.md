@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- `headroom wrap omp` / `headroom unwrap omp` — one-command wrap for Oh My Pi
+  (`omp`). The wrap points omp's built-in `anthropic` provider at the local
+  proxy by injecting a marker-fenced `providers.anthropic.baseUrl` override
+  into `~/.omp/agent/models.yml` (pre-wrap file snapshotted byte-for-byte,
+  restored by `headroom unwrap omp`), starts the proxy alongside omp, and sets
+  up the CLI context tool via the project's `AGENTS.md`. omp resolves its
+  Anthropic chat endpoint from `models.yml` — `ANTHROPIC_BASE_URL` only feeds
+  its web-search helper — and a same-ID override keeps omp's bundled model
+  catalog and stored credentials
+  ([#1149](https://github.com/headroomlabs-ai/headroom/issues/1149)).
+
 ### Fixed
 - Concurrent large requests no longer 502 on a transient HTTP/2 stream reset.
   A single upstream `StreamReset` poisons the shared h2 connection and raises
