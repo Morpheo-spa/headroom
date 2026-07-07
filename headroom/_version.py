@@ -30,7 +30,7 @@ def is_release_version(value: object) -> bool:
 def normalize_release_version(value: object) -> str | None:
     """Return a comparable release version without a display prefix."""
     cleaned = _clean_version(value)
-    if not is_release_version(cleaned):
+    if cleaned is None or RELEASE_VERSION_RE.fullmatch(cleaned) is None:
         return None
     return cleaned[1:] if cleaned.startswith("v") else cleaned
 
