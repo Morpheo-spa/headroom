@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 UNKNOWN_VERSION = "unknown"
 VERSION_ENV_VARS = ("HEADROOM_VERSION", "HEADROOM_BUILD_VERSION")
+RELEASE_VERSION_RE = re.compile(r"^v?\d+\.\d+\.\d+$")
 
 
 def _clean_version(value: object) -> str | None:
@@ -17,6 +19,28 @@ def _clean_version(value: object) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def is_release_version(value: object) -> bool:
+    """Return whether a value is a comparable release version."""
+    cleaned = _clean_version(value)
+    return bool(cleaned and RELEASE_VERSION_RE.fullmatch(cleaned))
+
+
+def normalize_release_version(value: object) -> str | None:
+    """Return a comparable release version without a display prefix."""
+    cleaned = _clean_version(value)
+    if not is_release_version(cleaned):
+        return None
+    return cleaned[1:] if cleaned.startswith("v") else cleaned
+
+
+def format_version_label(value: object) -> str:
+    """Return a user-facing version label without prefixing source labels."""
+    cleaned = _clean_version(value) or UNKNOWN_VERSION
+    if is_release_version(cleaned) and not cleaned.startswith("v"):
+        return f"v{cleaned}"
+    return cleaned
 
 
 def _env_version() -> str | None:

@@ -1835,8 +1835,9 @@
                 },
 
                 formatVersion(value) {
-                    if (value === 'loading' || value === 'unknown') return value;
-                    return /^\d/.test(value) ? 'v' + value : value;
+                    const label = String(value || 'unknown').trim();
+                    if (label === 'loading' || label === 'unknown') return label;
+                    return /^\d+\.\d+\.\d+$/.test(label) ? 'v' + label : label;
                 },
 
                 async fetchStats() {
