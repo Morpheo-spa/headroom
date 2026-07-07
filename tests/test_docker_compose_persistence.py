@@ -14,3 +14,12 @@ def test_top_level_compose_pins_headroom_state_to_named_volume() -> None:
     assert "- HOME=/home/nonroot" in compose
     assert "- HEADROOM_WORKSPACE_DIR=/home/nonroot/.headroom" in compose
     assert "- HEADROOM_CONFIG_DIR=/home/nonroot/.headroom/config" in compose
+
+
+def test_top_level_compose_marks_source_build_version() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "HEADROOM_BUILD_VERSION: ${HEADROOM_BUILD_VERSION:-source-build}" in compose
+    assert 'ARG HEADROOM_BUILD_VERSION=""' in dockerfile
+    assert "_build_info.py" in dockerfile

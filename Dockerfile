@@ -7,6 +7,7 @@ ARG PYTHON_SITE_PACKAGES=/usr/local/lib/python${PYTHON_VERSION}/site-packages
 FROM python:${PYTHON_VERSION}-slim AS builder
 
 ARG UV_VERSION
+ARG HEADROOM_BUILD_VERSION=""
 
 # build-essential / g++ for any C extension wheels uv may need to build
 # from source. curl + ca-certificates are required by the rustup
@@ -50,6 +51,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/build/target \
     uv pip install --system ".[${HEADROOM_EXTRAS}]"
+
+RUN if [ -n "${HEADROOM_BUILD_VERSION}" ]; then \
+      cd /tmp && HEADROOM_BUILD_VERSION="${HEADROOM_BUILD_VERSION}" python -c "import os; from pathlib import Path; import headroom._version as v; p = Path(v.__file__).with_name('_build_info.py'); p.write_text('BUILD_VERSION = ' + repr(os.environ['HEADROOM_BUILD_VERSION']) + '\n', encoding='utf-8'); print('baked Headroom build version: ' + os.environ['HEADROOM_BUILD_VERSION'])"; \
+    fi
 
 # Build-stage smoke check: verify the extension loads end-to-end inside
 # the build image before we copy site-packages into the runtime image.
