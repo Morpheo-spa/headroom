@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import math
 import os
 import tempfile
 import threading
@@ -21,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 from headroom import paths as _paths
-from headroom.pricing.opencode_prices import get_opencode_reference_pricing
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ PROJECT_NAME_MAX_LENGTH = 128
 DEFAULT_MAX_HISTORY_AGE_DAYS = 365
 DEFAULT_MAX_RESPONSE_HISTORY_POINTS = 500
 DEFAULT_DISPLAY_SESSION_INACTIVITY_MINUTES = 60
+DEFAULT_FALLBACK_INPUT_COST_PER_TOKEN = 3.0 / 1_000_000
 
 LITELLM_AVAILABLE = importlib.util.find_spec("litellm") is not None
 litellm: Any | None = None
@@ -108,15 +109,20 @@ def _bucket_start(timestamp: datetime, bucket: str) -> datetime:
 def _coerce_int(value: Any, default: int = 0) -> int:
     try:
         return max(int(value), 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
 def _coerce_float(value: Any, default: float = 0.0) -> float:
     try:
-        return max(float(value), 0.0)
-    except (TypeError, ValueError):
+        coerced = float(value)
+    except (TypeError, ValueError, OverflowError):
         return default
+    # Reject NaN/inf -- float() accepts them, but they poison arithmetic and
+    # serialize to JSON the dashboard's JSON.parse rejects.
+    if not math.isfinite(coerced):
+        return default
+    return max(coerced, 0.0)
 
 
 PROVIDER_UNKNOWN = "unknown"
@@ -244,10 +250,13 @@ def _estimate_compression_savings_usd(
         except Exception:
             pass
 
+    from headroom.pricing.opencode_prices import get_opencode_reference_pricing
+
     reference_pricing = get_opencode_reference_pricing(model, pricing_surface)
-    if reference_pricing is None:
-        return 0.0
-    return float(tokens_saved) * float(reference_pricing.input_cost_per_token)
+    if reference_pricing is not None:
+        return float(tokens_saved) * float(reference_pricing.input_cost_per_token)
+
+    return float(tokens_saved) * float(DEFAULT_FALLBACK_INPUT_COST_PER_TOKEN)
 
 
 def _estimate_input_cost_usd(
@@ -270,22 +279,31 @@ def _estimate_input_cost_usd(
     cache_write = _coerce_int(cache_write_tokens)
     uncached = _coerce_int(uncached_input_tokens)
     billed_cache_write = 0 if cache_write_inferred else cache_write
-    litellm = _get_litellm_module()
-    # Gate on tokens actually sent. Providers like Anthropic report cache
-    # reads/writes separately from `input_tokens` (the uncached portion), so a
-    # fully prefix-cached request has input_tokens == 0 while cache_read > 0.
-    # Bailing on `input_tokens <= 0` alone dropped the real cache-read cost,
-    # leaving days with compression savings but zero recorded spend.
+
+    # Prefer the breakdown when callers supply segmented token counts. Use the
+    # raw (non-billed) cache_write to detect breakdown presence — an inferred
+    # cache write still means "this request had cache activity", even though
+    # it isn't separately billed. Never add `input_tokens` on top of the
+    # breakdown to avoid double-counting.
+    use_breakdown = (cache_read + cache_write + uncached) > 0
+    chargeable_tokens = (
+        (cache_read + billed_cache_write + uncached) if use_breakdown else total_input_tokens
+    )
     if total_input_tokens + cache_read + cache_write + uncached <= 0:
         return 0.0
 
+    litellm = _get_litellm_module()
+    # Keep exact provider pricing authoritative when available.
+    # `litellm` can be present but lack an entry for the resolved model, in
+    # which case we fall back to Headroom's opencode reference pricing table
+    # (when applicable) and finally to a blended rate instead of zeroing usage.
     if litellm is not None:
         try:
             resolved = _resolve_litellm_model(model)
             info = litellm.model_cost.get(resolved, {})
             input_cost_per_token = info.get("input_cost_per_token")
             if input_cost_per_token:
-                if cache_read + cache_write + uncached > 0:
+                if use_breakdown:
                     cache_read_cost = info.get(
                         "cache_read_input_token_cost",
                         input_cost_per_token,
@@ -304,19 +322,22 @@ def _estimate_input_cost_usd(
         except Exception:
             pass
 
+    from headroom.pricing.opencode_prices import get_opencode_reference_pricing
+
     reference_pricing = get_opencode_reference_pricing(model, pricing_surface)
-    if reference_pricing is None:
-        return 0.0
-    input_cost_per_token = reference_pricing.input_cost_per_token
-    if cache_read + cache_write + uncached > 0:
-        cache_read_cost = reference_pricing.cache_read_input_token_cost
-        cache_write_cost = reference_pricing.cache_write_input_token_cost
-        return (
-            float(cache_read) * float(cache_read_cost or input_cost_per_token)
-            + float(billed_cache_write) * float(cache_write_cost or input_cost_per_token)
-            + float(uncached) * float(input_cost_per_token)
-        )
-    return float(total_input_tokens) * float(input_cost_per_token)
+    if reference_pricing is not None:
+        input_cost_per_token = reference_pricing.input_cost_per_token
+        if use_breakdown:
+            cache_read_cost = reference_pricing.cache_read_input_token_cost
+            cache_write_cost = reference_pricing.cache_write_input_token_cost
+            return (
+                float(cache_read) * float(cache_read_cost or input_cost_per_token)
+                + float(billed_cache_write) * float(cache_write_cost or input_cost_per_token)
+                + float(uncached) * float(input_cost_per_token)
+            )
+        return float(total_input_tokens) * float(input_cost_per_token)
+
+    return float(chargeable_tokens) * float(DEFAULT_FALLBACK_INPUT_COST_PER_TOKEN)
 
 
 def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
@@ -489,6 +510,7 @@ class SavingsTracker:
         max_response_history_points: int = DEFAULT_MAX_RESPONSE_HISTORY_POINTS,
         display_session_inactivity_minutes: int = (DEFAULT_DISPLAY_SESSION_INACTIVITY_MINUTES),
         stateless: bool = False,
+        save_flush_every: int = 1,
     ) -> None:
         # In stateless mode the tracker keeps live counters in memory but never
         # writes proxy_savings.json (honors HeadroomConfig.stateless, which
@@ -511,6 +533,13 @@ class SavingsTracker:
             ),
             1,
         )
+        # ponytail: per-record save throttle. Default 1 = persist every call
+        # (the durable default that direct/CLI callers rely on). The async proxy
+        # opts into a higher value so it doesn't json.dumps + fsync the whole
+        # history on every request. Lossless because _save_locked always writes
+        # the FULL state — a skipped save just means the next one is complete.
+        self._save_flush_every = max(_coerce_int(save_flush_every, 1), 1)
+        self._since_save = 0
         self._lock = threading.Lock()
         self._state = self._load_state()
 
@@ -587,7 +616,7 @@ class SavingsTracker:
                 }
             )
             self._trim_history_locked(reference_time=timestamp_dt)
-            self._save_locked()
+            self._maybe_save_locked()
             return True
 
     def record_request(
@@ -750,7 +779,7 @@ class SavingsTracker:
                 self._state["history"].append(history_entry)
                 self._trim_history_locked(reference_time=timestamp_dt)
 
-            self._save_locked()
+            self._maybe_save_locked()
             return True
 
     def _record_project_locked(
@@ -1106,9 +1135,29 @@ class SavingsTracker:
 
         return compacted
 
+    def flush(self) -> None:
+        """Persist any records held back by the save throttle.
+
+        Call on graceful shutdown so a batched proxy doesn't drop the tail of
+        recent requests. No-op when nothing is buffered.
+        """
+        with self._lock:
+            if self._since_save > 0:
+                self._save_locked()
+
+    def _maybe_save_locked(self) -> None:
+        """Throttled persist: write only every ``_save_flush_every`` records.
+
+        Caller must hold ``self._lock``. Lossless by design — see ``__init__``.
+        """
+        self._since_save += 1
+        if self._since_save >= self._save_flush_every:
+            self._save_locked()
+
     def _save_locked(self) -> None:
         if self._stateless:
             # Stateless mode: live counters stay in memory; nothing is persisted.
+            self._since_save = 0
             return
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -1138,6 +1187,9 @@ class SavingsTracker:
                 except OSError:
                     pass
                 raise
+            # Reset only after a durable write. A failed save leaves the counter
+            # untouched so the next record retries instead of waiting a full window.
+            self._since_save = 0
         except OSError as e:
             logger.warning("Failed to save savings history to %s: %s", self._path, e)
 

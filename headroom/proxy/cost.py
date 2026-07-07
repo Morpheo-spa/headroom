@@ -14,10 +14,6 @@ from collections import deque
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from headroom.pricing.opencode_prices import (
-    get_opencode_reference_pricing,
-    reference_pricing_metadata,
-)
 from headroom.proxy.modes import PROXY_MODE_CACHE
 
 if TYPE_CHECKING:
@@ -613,6 +609,21 @@ def build_session_summary(
     # dropping info the model actually needs).
     summary["mcp"] = _aggregate_mcp_events()
 
+    # Codex WS sessions compress per-unit on the long-lived /responses socket,
+    # but turn-level records (which feed tokens_saved_total above) only land
+    # when a response.completed frame carries usage. Surface the live per-unit
+    # counters so a WS-only session doesn't read as "no activity" mid-turn.
+    # Kept as a separate block rather than summed into the compression totals:
+    # turns that DID record already contributed the same savings there, so
+    # adding the unit sums on top would double-count.
+    ws_units = getattr(metrics, "codex_ws_units_total", 0)
+    if ws_units:
+        summary["codex_ws"] = {
+            "units_total": ws_units,
+            "units_modified": getattr(metrics, "codex_ws_units_modified_total", 0),
+            "tokens_saved": getattr(metrics, "codex_ws_unit_tokens_saved_sum", 0),
+        }
+
     # Add tip if token mode would help
     if proxy.config.mode == PROXY_MODE_CACHE and uncompressed_reasons["prefix_frozen"] > 10:
         summary["tip"] = (
@@ -884,6 +895,8 @@ class CostTracker:
         pricing_surface: str | None = None,
     ) -> tuple[float, float, float] | None:
         """Return display-only OpenCode reference prices for unknown models."""
+        from headroom.pricing.opencode_prices import get_opencode_reference_pricing
+
         surface = pricing_surface or self._pricing_surface_by_model.get(model)
         pricing = get_opencode_reference_pricing(model, surface)
         if pricing is None:
@@ -901,6 +914,11 @@ class CostTracker:
         return self._get_cache_prices(model) or self._get_reference_cache_prices(model)
 
     def _pricing_metadata_for_model(self, model: str) -> dict[str, object] | None:
+        from headroom.pricing.opencode_prices import (
+            get_opencode_reference_pricing,
+            reference_pricing_metadata,
+        )
+
         surface = self._pricing_surface_by_model.get(model)
         if not surface:
             return None
