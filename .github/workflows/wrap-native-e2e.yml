@@ -65,7 +65,7 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
-          file: ./coverage-wrap-native.xml
+          files: ./coverage-wrap-native.xml
           flags: wrap-native
           name: wrap-native-${{ matrix.os }}
           token: ${{ secrets.CODECOV_TOKEN }}
