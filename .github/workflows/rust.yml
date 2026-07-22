@@ -23,6 +23,12 @@ on:
   schedule:
     # Nightly parity run at 07:17 UTC (weekdays only). Phase 0 allows failure.
     - cron: '17 7 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      full_wheel_matrix:
+        description: "Build all wheel targets (incl. macOS Intel), same as a release"
+        type: boolean
+        default: true
 
 concurrency:
   group: rust-${{ github.ref }}
@@ -61,36 +67,54 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
+  wheel-matrix:
+    name: compute wheel matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - name: Select wheel targets
+        id: set
+        # Cost optimization: macOS runners bill at ~10x Linux minutes.
+        # On regular pushes/PRs we only smoke-test Linux + macOS Apple
+        # Silicon (the more common target). The macOS Intel build is
+        # skipped there and only runs on real release tags or a manual
+        # workflow_dispatch with full_wheel_matrix=true, so every
+        # published release still gets full 3-platform coverage.
+        run: |
+          FULL=false
+          if [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            FULL=true
+          elif [[ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.full_wheel_matrix == 'true' }}" == "true" ]]; then
+            FULL=true
+          fi
+
+          if [[ "$FULL" == "true" ]]; then
+            echo 'matrix={"include":[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","maturin-target":"x86_64"},{"os":"macos-14","target":"aarch64-apple-darwin","maturin-target":"aarch64-apple-darwin"},{"os":"macos-15-intel","target":"x86_64-apple-darwin","maturin-target":"x86_64-apple-darwin"}]}' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix={"include":[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","maturin-target":"x86_64"},{"os":"macos-14","target":"aarch64-apple-darwin","maturin-target":"aarch64-apple-darwin"}]}' >> "$GITHUB_OUTPUT"
+          fi
+
   wheels:
     name: wheels (${{ matrix.target }})
+    needs: wheel-matrix
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            maturin-target: x86_64
-          - os: macos-14
-            target: aarch64-apple-darwin
-            maturin-target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            maturin-target: x86_64-apple-darwin
-        # Intel macOS uses `ort-load-dynamic` (no prebuilt ORT from ort-sys);
-        # Apple Silicon bundles ORT via `ort-download-binaries-rustls-tls`.
+      matrix: ${{ fromJson(needs.wheel-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - name: "Build wheel (single-wheel architecture builds headroom-ai)"
-        uses: PyO3/maturin-action@v1
         # Maturin reads `[tool.maturin]` from the root `pyproject.toml`
         # which points at `crates/headroom-py/Cargo.toml` for the cdylib.
         # Output is `headroom_ai-<ver>-<py>-<py>-<platform>.whl` containing
         # both Python source and the compiled `headroom/_core.so`.
+        uses: PyO3/maturin-action@v1
         with:
           command: build
           args: --release --out dist
